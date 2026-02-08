@@ -25,7 +25,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # ================= CONFIG =================
 BOT_TOKEN = "8300929540:AAE06KzAdFi_t2TD-jTTkFGbUCywI4tB7nA"
 KIE_API_KEY = "156752f1ed34819ecb236f7060494a14"
-ADMIN_IDS = [5876092687]  
+ADMIN_IDS = [123456789]  # Замените на ID админов
 
 CREATE_URL = "https://api.kie.ai/api/v1/jobs/createTask"
 INFO_URL = "https://api.kie.ai/api/v1/jobs/recordInfo"
@@ -563,35 +563,37 @@ async def handle_card_text(message: Message, state: FSMContext):
     base_prompt = CARDS_TEMPLATES[card_type]['prompt']
     final_prompt = f"{base_prompt}: {user_text}"
     
-    await message.answer(
+    # Отправляем начальное сообщение
+    processing_msg = await message.answer(
         f"🖼 **Отправляю в обработку...**\n"
-        f"⏱ *Примерное время: ~{CARDS_TEMPLATES[card_type]['time_estimate']} секунд*",
+        f"⏱ *Примерное время: ~{CARDS_TEMPLATES[card_type]['time_estimate']} секунд*\n"
+        f"⏳ *Не закрывайте чат, идёт генерация...*",
         parse_mode=ParseMode.MARKDOWN
     )
     
-    # Получаем фото
-    file_info = await bot.get_file(data['photo_file_id'])
-    file_path = file_info.file_path
-    telegram_file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
-    
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {KIE_API_KEY}"
-    }
-    
-    payload = {
-        "model": "nano-banana-pro",
-        "callBackUrl": "",
-        "input": {
-            "prompt": final_prompt,
-            "aspect_ratio": "1:1",
-            "resolution": "1K",
-            "output_format": "png",
-            "image_input": [telegram_file_url]
-        }
-    }
-    
     try:
+        # Получаем фото
+        file_info = await bot.get_file(data['photo_file_id'])
+        file_path = file_info.file_path
+        telegram_file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {KIE_API_KEY}"
+        }
+        
+        payload = {
+            "model": "nano-banana-pro",
+            "callBackUrl": "",
+            "input": {
+                "prompt": final_prompt,
+                "aspect_ratio": "1:1",
+                "resolution": "1K",
+                "output_format": "png",
+                "image_input": [telegram_file_url]
+            }
+        }
+        
         # Создаем задачу
         create_response = requests.post(CREATE_URL, headers=headers, json=payload).json()
         
@@ -604,7 +606,7 @@ async def handle_card_text(message: Message, state: FSMContext):
         
         task_id = create_response["data"]["taskId"]
         
-        # Ждем результат с прогрессом
+        # Ждем результат
         result_url = None
         for i in range(30):
             await asyncio.sleep(2)
@@ -628,13 +630,18 @@ async def handle_card_text(message: Message, state: FSMContext):
                 await state.clear()
                 return
             
-            # Отправляем прогресс каждые 10 секунд
+            # Обновляем сообщение о прогрессе каждые 10 секунд
             if i % 5 == 0:
-                progress = min(100, int((i / 30) * 100))
-                await message.edit_text(
-                    f"🔄 **Генерация...** {progress}%\n"
-                    f"⏱ Осталось ~{60 - (i*2)} секунд"
-                )
+                try:
+                    progress = min(100, int((i / 30) * 100))
+                    await processing_msg.edit_text(
+                        f"🔄 **Генерация...** {progress}%\n"
+                        f"⏱ Осталось ~{60 - (i*2)} секунд\n"
+                        f"⏳ *Не закрывайте чат, идёт генерация...*"
+                    )
+                except Exception as e:
+                    # Если не удалось редактировать сообщение, игнорируем ошибку
+                    print(f"Не удалось обновить прогресс: {e}")
         
         if not result_url:
             update_balance(user_id, 10, "Возврат: время истекло")
@@ -653,7 +660,7 @@ async def handle_card_text(message: Message, state: FSMContext):
         # Сохраняем в БД
         add_user_card(user_id, card_type, card_filename, user_text)
         
-        # Отправляем результат
+        # Отправляем результат новым сообщением
         new_balance = balance - 10
         await message.answer_photo(
             photo=FSInputFile(card_filename),
@@ -684,7 +691,7 @@ async def deposit_menu(callback: CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(F.data.startswith("deposit_"))
-async def select_deposit_amount(callback: CallbackQuery, state: FSMContext):
+async def select_deposit_amount(callback: CallbackQuery):
     amount_map = {
         "deposit_100": (100, 50),
         "deposit_250": (250, 100),
@@ -1102,7 +1109,7 @@ async def admin_reply_to_support(callback: CallbackQuery, state: FSMContext):
         user_id, message_text = result
         await state.update_data(support_id=support_id, user_id=user_id)
         
-        await callback.message.edit_text(
+        await callback.message.answer(
             f"📨 **Ответ на обращение**\n\n"
             f"💬 Оригинальное сообщение: {message_text}\n\n"
             f"✏️ Введите ваш ответ:",
@@ -1254,6 +1261,11 @@ async def admin_command(message: Message):
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=get_admin_keyboard()
     )
+
+# ================ ОБРАБОТКА ОШИБОК ================
+@dp.callback_query(F.data == "noop")
+async def noop(callback: CallbackQuery):
+    await callback.answer()
 
 # ================ ЗАПУСК ================
 async def main():
